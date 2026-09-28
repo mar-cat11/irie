@@ -123,7 +123,7 @@ function terrAt(x,z){const u=clamp((x+1)*.5*TN-.5,0,TN-1.001),v=clamp((z+1)*.5*T
 const N=160, DX=2/N, NN=N*N;
 const H=new Float32Array(NN), V=new Float32Array(NN), FO=new Float32Array(NN), S=new Float32Array(NN), DMP=new Float32Array(NN), FG=new Float32Array(NN), WET=new Uint8Array(NN);
 const simData=new Float32Array(NN*2);
-const PERIOD=1.7, OMEGA=2*Math.PI/PERIOD, SWELL=0.0105;
+const PERIOD=3.4, OMEGA=2*Math.PI/PERIOD, SWELL=0.0036;
 for(let j=0;j<N;j++)for(let i=0;i<N;i++){const k=j*N+i,x=-1+(i+.5)*DX,z=-1+(j+.5)*DX;const d=-terrAt(x,z);
   WET[k]=d>0.003?1:0; S[k]=0.85*clamp(d/0.3,0.05,1.15);
   const sh=1-smooth(0,0.07,d); DMP[k]=0.99965-0.035*Math.pow(sh,1.5); FG[k]=Math.pow(1-smooth(0,0.05,d),2);}
@@ -227,10 +227,19 @@ float tH(vec2 xz){return texture(uTerr,xz*.5+.5).r;}
 vec3 tN(vec2 xz){float e=2./256.;float hx=tH(xz+vec2(e,0))-tH(xz-vec2(e,0));float hz=tH(xz+vec2(0,e))-tH(xz-vec2(0,e));return normalize(vec3(-hx,2.*e,-hz));}
 float sH(vec2 xz){return texture(uSim,xz*.5+.5).r;}
 vec2 sG(vec2 xz){float e=2./SIMN;return vec2(sH(xz+vec2(e,0))-sH(xz-vec2(e,0)),sH(xz+vec2(0,e))-sH(xz-vec2(0,e)))/(2.*e);}
-vec3 waveD(vec2 p){vec3 r=vec3(0);
-  for(int i=0;i<7;i++){float fi=float(i);float ang=1.5708+(fi-3.)*.52+sin(fi*3.1)*.3;vec2 d=vec2(cos(ang),sin(ang));
-    float lam=.034*pow(1.33,fi);float k=6.2832/lam;float w=sqrt(k)*.95;float a=.036/k;
+// occasional puffs of wind drifting across the cove
+float gust(vec2 p){float t=uTime;float n=fbm(p*1.1+vec2(-t*.11,t*.045));float thr=.62-.06*sin(t*.33)-.04*sin(t*.71+1.);return smoothstep(thr,thr+.16,n);}
+// very fine ripples (only visible as a shimmer and in the glint)
+vec3 waveD(vec2 p,float gm){vec3 r=vec3(0);float amp=.012+.024*gm;
+  for(int i=0;i<7;i++){float fi=float(i);float ang=1.5708+(fi-3.)*.55+sin(fi*3.1)*.35;vec2 d=vec2(cos(ang),sin(ang));
+    float lam=.013*pow(1.24,fi);float k=6.2832/lam;float w=sqrt(k)*.8;float a=amp/k;
     float ph=dot(d,p)*k-w*uTime+fi*1.7;r.z+=a*sin(ph);r.xy+=a*k*cos(ph)*d;}
+  return r;}
+// broad, lazy undulation (drives the soft caustics)
+vec3 waveC(vec2 p,float gm){vec3 r=vec3(0);float amp=.006+.008*gm;
+  for(int i=0;i<4;i++){float fi=float(i);float ang=1.5708+(fi-1.5)*.7;vec2 d=vec2(cos(ang),sin(ang));
+    float lam=.075*pow(1.35,fi);float k=6.2832/lam;float w=sqrt(k)*.7;float a=amp/k;
+    float ph=dot(d,p)*k-w*uTime+fi*2.3;r.z+=a*sin(ph);r.xy+=a*k*cos(ph)*d;}
   return r;}
 float swash(vec2 xz,float depth){
   float ph=uTime*uOmega-xz.x*.9+sin(xz.x*2.7+uTime*.13)*.9-.5;
@@ -338,7 +347,7 @@ const WATER_VS=COMMON+`layout(location=0) in vec2 aXZ;out vec3 vP;
 void main(){float th=tH(aXZ);float y=sH(aXZ)+swash(aXZ,-th);vP=vec3(aXZ.x,y,aXZ.y);gl_Position=uVP*vec4(vP,1.);}`;
 const WATER_FS=COMMON+`in vec3 vP;out vec4 o;void main(){
   vec2 xz=vP.xz;float tY=tH(xz);float wdep=vP.y-tY;if(wdep<.0006)discard;
-  vec3 wv=waveD(xz);float calm=mix(.25,1.,smoothstep(0.,.06,wdep));
+  float gm=gust(xz);vec3 wv=waveD(xz,gm)+waveC(xz,gm);float calm=mix(.25,1.,smoothstep(0.,.06,wdep));
   float dcam=length(uCam-vP);calm*=clamp(1.6/dcam,.35,1.);
   vec2 g=sG(xz)+wv.xy*uWind*calm;
   vec3 N=normalize(vec3(-g.x,1.,-g.y));
@@ -357,7 +366,7 @@ const WATER_FS=COMMON+`in vec3 vP;out vec4 o;void main(){
   vec3 gl1=uSunCol*uGlintK*(pow(nh,mix(1400.,5000.,uGlitter))*40.*(1.+2.*uGlitter)+pow(nh,420.)*.12*(1.-uGlitter*.7))*ssh;
   vec2 gc=floor(xz*300.);float gh=hash12(gc+floor(uTime*7.+hash12(gc+3.)*7.)*1.37);
   float gh2=hash12(floor(xz*520.)+floor(uTime*11.+hash12(floor(xz*520.)+5.)*9.)*2.71);
-  vec3 gl2=uSunCol*uGlintK*uGlitter*ssh*(step(mix(.965,.92,uGlitter),gh)*pow(nh,mix(260.,150.,uGlitter))*34.+step(.95,gh2)*pow(nh,240.)*22.*uGlitter);
+  vec3 gl2=uSunCol*uGlintK*uGlitter*ssh*(step(mix(.965,.92,uGlitter),gh)*pow(nh,mix(600.,380.,uGlitter))*34.+step(.95,gh2)*pow(nh,600.)*22.*uGlitter);
   col+=gl1+gl2;float glint=dot(gl2,vec3(.3,.5,.2))/max(dot(uSunCol*uGlintK,vec3(.3,.5,.2)),.01);
   if(uNight>.01){
     for(int i=0;i<6;i++){vec3 d=uL[i].xyz-vP;float r2=dot(d,d);vec3 l=d*inversesqrt(r2);
@@ -376,7 +385,7 @@ const WATER_FS=COMMON+`in vec3 vP;out vec4 o;void main(){
   o=vec4(tonemap(col),clamp(smoothstep(3.,18.,glint),0.,1.));}`;
 
 const CAUS_VS=COMMON+`layout(location=0) in vec2 aXZ;out vec2 vOld;out vec2 vNew;out float vW;
-void main(){vec2 xz=aXZ;float h=sH(xz);vec2 g=sG(xz)+waveD(xz).xy*uWind;
+void main(){vec2 xz=aXZ*1.3;float h=sH(xz);float gm=gust(xz);vec2 g=sG(xz)+waveC(xz,gm).xy*uWind;
   vec3 Nn=normalize(vec3(-g.x,1.,-g.y));vec3 L=refract(-uSunDir,Nn,.75);vec3 L0=refract(-uSunDir,vec3(0,1,0),.75);
   float d=max(h-tH(xz),0.);vec2 hit=xz+L.xz*(d/max(-L.y,.2));float d2=max(h-tH(hit),0.);hit=xz+L.xz*(d2/max(-L.y,.2));
   vOld=xz+L0.xz*(d2/max(-L0.y,.2));vNew=hit;vW=smoothstep(0.,.01,d2);gl_Position=vec4(hit,0.,1.);}`;
@@ -471,7 +480,7 @@ function sprayStep(dt){
     if(!p.k&&p.vy<0&&p.y<=Math.max(wh,th)){if(wh>th)disturb(p.x,p.z,0.01,-0.0006*p.s/0.008,0.06);parts.splice(i,1);continue;}
     if(p.life<=0){parts.splice(i,1);}}
 }
-const mTerr=grid(256), mWater=grid(MOBILE?150:200), mCaus=grid(MOBILE?220:280), mQuad=grid(1);
+const mTerr=grid(256), mWater=grid(MOBILE?150:200), mCaus=grid(MOBILE?280:360), mQuad=grid(1);
 function sideMesh(M){const A=[],Nn=[],I=[];
   const edges=[[[-1,1],[1,1],[0,0,1]],[[1,1],[1,-1],[1,0,0]],[[1,-1],[-1,-1],[0,0,-1]],[[-1,-1],[-1,1],[-1,0,0]]];
   for(const [a,b,n] of edges){const base=A.length/3;for(let i=0;i<=M;i++){const t=i/M,x=mix(a[0],b[0],t),z=mix(a[1],b[1],t);A.push(x,z,1,x,z,0);Nn.push(...n,...n);}
@@ -513,9 +522,9 @@ const fbCaus=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,fbCaus);gl
 /* ---------------- lighting presets ---------------- */
 const DAY={sun:norm([-0.36,0.80,-0.50]),sunCol:[2.55,2.42,2.18],amb:[0.36,0.46,0.58],zen:[0.10,0.27,0.64],hor:[0.66,0.78,0.88],scat:[0.010,0.125,0.19],bgTop:[0.905,0.935,0.94],bgBot:[0.80,0.855,0.87]};
 const EVE={sun:norm([-0.62,0.22,-0.75]),sunCol:[3.1,1.55,0.72],amb:[0.30,0.28,0.40],zen:[0.20,0.23,0.46],hor:[1.00,0.62,0.42],scat:[0.012,0.075,0.13],bgTop:[0.95,0.86,0.79],bgBot:[0.76,0.71,0.75]};
-const MORN={glintK:1,wind:1.25,star:0.8,sun:norm([-0.20,0.22,-0.95]),sunCol:[2.7,2.2,1.6],amb:[0.32,0.38,0.50],zen:[0.16,0.32,0.60],hor:[0.72,0.68,0.64],scat:[0.012,0.115,0.175],bgTop:[0.93,0.925,0.90],bgBot:[0.82,0.84,0.86],glitter:1,night:0};
+const MORN={glintK:1,wind:1.0,star:0.8,sun:norm([-0.20,0.37,-0.93]),sunCol:[2.7,2.2,1.6],amb:[0.32,0.38,0.50],zen:[0.16,0.32,0.60],hor:[0.72,0.68,0.64],scat:[0.012,0.115,0.175],bgTop:[0.93,0.925,0.90],bgBot:[0.82,0.84,0.86],glitter:1,night:0};
 Object.assign(DAY,{glitter:0.35,night:0,glintK:1,wind:1,star:0.35});Object.assign(EVE,{glitter:0.6,night:0,glintK:1,wind:1.1,star:0.6});
-const NIGHT={glintK:9,wind:1.3,star:1.0,sun:norm([-0.22,0.24,-0.95]),sunCol:[0.17,0.21,0.33],amb:[0.030,0.045,0.08],zen:[0.004,0.008,0.025],hor:[0.025,0.04,0.085],scat:[0.002,0.018,0.032],bgTop:[0.075,0.10,0.15],bgBot:[0.025,0.035,0.06],glitter:0.85,night:1};
+const NIGHT={glintK:9,wind:1.0,star:1.0,sun:norm([-0.22,0.36,-0.93]),sunCol:[0.17,0.21,0.33],amb:[0.030,0.045,0.08],zen:[0.004,0.008,0.025],hor:[0.025,0.04,0.085],scat:[0.002,0.018,0.032],bgTop:[0.075,0.10,0.15],bgBot:[0.025,0.035,0.06],glitter:0.85,night:1};
 const PRESETS={morning:MORN,day:DAY,evening:EVE,night:NIGHT};
 const cur=JSON.parse(JSON.stringify(MORN));let target=MORN;
 const lerp3=(a,b,t)=>[mix(a[0],b[0],t),mix(a[1],b[1],t),mix(a[2],b[2],t)];
@@ -598,7 +607,7 @@ LCU.set([1.0,0.7,0.4],15);
 
 function commonU(PP,L){gl.useProgram(PP.p);
   gl.uniform1i(U(PP,'uTerr'),0);gl.uniform1i(U(PP,'uSim'),1);gl.uniform1i(U(PP,'uCaus'),2);
-  gl.uniform1f(U(PP,'uTime'),simT);gl.uniform1f(U(PP,'uSwashAmp'),0.034);gl.uniform1f(U(PP,'uOmega'),OMEGA);gl.uniform1f(U(PP,'uWind'),L.wind||1.0);
+  gl.uniform1f(U(PP,'uTime'),simT);gl.uniform1f(U(PP,'uSwashAmp'),0.016);gl.uniform1f(U(PP,'uOmega'),OMEGA);gl.uniform1f(U(PP,'uWind'),L.wind||1.0);
   gl.uniform3fv(U(PP,'uSunDir'),L.sun);gl.uniform3fv(U(PP,'uSunCol'),L.sunCol);gl.uniform3fv(U(PP,'uSkyZen'),L.zen);gl.uniform3fv(U(PP,'uSkyHor'),L.hor);
   gl.uniform3fv(U(PP,'uAmb'),L.amb);gl.uniform3fv(U(PP,'uScat'),L.scat);gl.uniform3fv(U(PP,'uCam'),CS.e);
   gl.uniform4fv(U(PP,'uBalls'),ballU);gl.uniform3fv(U(PP,'uBallTint'),ballT);gl.uniform4fv(U(PP,'uL'),LU);gl.uniform3fv(U(PP,'uLC'),LCU);
